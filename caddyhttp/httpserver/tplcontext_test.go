@@ -1,7 +1,22 @@
+// Copyright 2015 Light Code Labs, LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 package httpserver
 
 import (
 	"bytes"
+	"crypto/tls"
 	"fmt"
 	"io/ioutil"
 	"net"
@@ -263,7 +278,7 @@ func TestHostname(t *testing.T) {
 		// // Test 3 - ipv6 without port and brackets
 		// {"2001:4860:4860::8888", "google-public-dns-a.google.com."},
 		// Test 4 - no hostname available
-		{"1.1.1.1", "1.1.1.1"},
+		{"0.0.0.0", "0.0.0.0"},
 	}
 
 	for i, test := range tests {
@@ -906,5 +921,42 @@ func TestAddLink(t *testing.T) {
 				t.Errorf("Result not match: expect %v, but got %v", c.expectLinks, got)
 			}
 		})
+	}
+}
+
+func TestTlsVersion(t *testing.T) {
+	for _, test := range []struct {
+		tlsState       *tls.ConnectionState
+		expectedResult string
+	}{
+		{
+			&tls.ConnectionState{Version: tls.VersionTLS10},
+			"tls1.0",
+		},
+		{
+			&tls.ConnectionState{Version: tls.VersionTLS11},
+			"tls1.1",
+		},
+		{
+			&tls.ConnectionState{Version: tls.VersionTLS12},
+			"tls1.2",
+		},
+		// TLS not used
+		{
+			nil,
+			"",
+		},
+		// Unsupported version
+		{
+			&tls.ConnectionState{Version: 0x0399},
+			"",
+		},
+	} {
+		context := getContextOrFail(t)
+		context.Req.TLS = test.tlsState
+		result := context.TLSVersion()
+		if result != test.expectedResult {
+			t.Errorf("Expected %s got %s", test.expectedResult, result)
+		}
 	}
 }

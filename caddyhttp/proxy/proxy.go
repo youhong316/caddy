@@ -1,3 +1,17 @@
+// Copyright 2015 Light Code Labs, LLC
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Package proxy is middleware that proxies HTTP requests.
 package proxy
 
@@ -33,6 +47,12 @@ type Upstream interface {
 	// Checks if subpath is not an ignored path
 	AllowedPath(string) bool
 
+	// Gets the duration of the headstart the first
+	// connection is given in the Go standard library's
+	// implementation of "Happy Eyeballs" when DualStack
+	// is enabled in net.Dialer.
+	GetFallbackDelay() time.Duration
+
 	// Gets how long to try selecting upstream hosts
 	// in the case of cascading failures.
 	GetTryDuration() time.Duration
@@ -43,6 +63,10 @@ type Upstream interface {
 
 	// Gets the number of upstream hosts.
 	GetHostCount() int
+
+	// Gets how long to wait before timing out
+	// the request
+	GetTimeout() time.Duration
 
 	// Stops the upstream from proxying requests to shutdown goroutines cleanly.
 	Stop() error
@@ -68,7 +92,8 @@ type UpstreamHost struct {
 	// This is an int32 so that we can use atomic operations to do concurrent
 	// reads & writes to this value.  The default value of 0 indicates that it
 	// is healthy and any non-zero value indicates unhealthy.
-	Unhealthy int32
+	Unhealthy         int32
+	HealthCheckResult atomic.Value
 }
 
 // Down checks whether the upstream host is down or not.
@@ -172,7 +197,12 @@ func (p Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) (int, error) {
 		if nameURL, err := url.Parse(host.Name); err == nil {
 			outreq.Host = nameURL.Host
 			if proxy == nil {
-				proxy = NewSingleHostReverseProxy(nameURL, host.WithoutPathPrefix, http.DefaultMaxIdleConnsPerHost)
+				proxy = NewSingleHostReverseProxy(nameURL,
+					host.WithoutPathPrefix,
+					http.DefaultMaxIdleConnsPerHost,
+					upstream.GetTimeout(),
+					upstream.GetFallbackDelay(),
+				)
 			}
 
 			// use upstream credentials by default
@@ -228,8 +258,12 @@ func (p Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) (int, error) {
 			return 0, nil
 		}
 
-		if backendErr == httpserver.MaxBytesExceededErr {
+		if backendErr == httpserver.ErrMaxBytesExceeded {
 			return http.StatusRequestEntityTooLarge, backendErr
+		}
+
+		if backendErr == context.Canceled {
+			return CustomStatusContextCancelled, backendErr
 		}
 
 		// failover; remember this failure for some time if
@@ -367,3 +401,5 @@ func mutateHeadersByRules(headers, rules http.Header, repl httpserver.Replacer) 
 		}
 	}
 }
+
+const CustomStatusContextCancelled = 499
